@@ -9,7 +9,7 @@ from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 
 APP_DIR = Path(__file__).resolve().parent
-NVIDIA_CLIENT = Path("/opt/nim-clients/synthetic-video-detector/scripts/v1/synthetic-video-detector.py")
+NVIDIA_CLIENT = APP_DIR / "nim-clients" / "synthetic-video-detector" / "scripts" / "v1" / "synthetic-video-detector.py"
 NVIDIA_FUNCTION_ID = "847b6e53-0133-452d-ab85-d7acf3ace723"
 NVIDIA_TARGET = "grpc.nvcf.nvidia.com:443"
 MAX_VIDEO_BYTES = 50 * 1024 * 1024
@@ -95,8 +95,8 @@ async def analyse(video: UploadFile = File(...)):
             raise HTTPException(status_code=504, detail="The video analysis timed out. Please try a shorter video.")
 
         output = (result.stdout or "") + "\n" + (result.stderr or "")
-        probability_match = re.search(r"Final probability:\s*([0-9]*\.?[0-9]+)", output)
-        frames_match = re.search(r"Total frames processed:\s*(\d+)", output)
+        probability_match = re.search(r"Final probability:\\s*([0-9]*\\.?[0-9]+)", output)
+        frames_match = re.search(r"Total frames processed:\\s*(\\d+)", output)
 
         if result.returncode != 0 or not probability_match:
             # Avoid returning server logs or secrets to the browser.
