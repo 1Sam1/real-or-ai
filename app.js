@@ -55,16 +55,23 @@ function chooseMode(next) {
   mode = next;
   $("uploadPanel").hidden = next !== "upload";
   $("linkPanel").hidden = next !== "link";
+  $("imagePanel").hidden = next !== "image";
   $("uploadTab").classList.toggle("active", next === "upload");
   $("linkTab").classList.toggle("active", next === "link");
+  $("imageTab").classList.toggle("active", next === "image");
   $("status").textContent = "";
   validate();
 }
 
 $("uploadTab").addEventListener("click", () => chooseMode("upload"));
 $("linkTab").addEventListener("click", () => chooseMode("link"));
+$("imageTab").addEventListener("click", () => chooseMode("image"));
 $("videoFile").addEventListener("change", () => {
   $("fileName").textContent = $("videoFile").files[0]?.name || "";
+  validate();
+});
+$("imageFile").addEventListener("change", () => {
+  $("imageName").textContent = $("imageFile").files[0]?.name || "";
   validate();
 });
 $("videoUrl").addEventListener("input", validate);
@@ -72,7 +79,9 @@ $("videoUrl").addEventListener("input", validate);
 function validate() {
   const canProceed = mode === "upload"
     ? !!$("videoFile").files.length
-    : identifyVideoLink($("videoUrl").value).valid;
+    : mode === "image"
+      ? !!$("imageFile").files.length
+      : identifyVideoLink($("videoUrl").value).valid;
   $("analyseBtn").disabled = !canProceed;
 }
 
@@ -95,8 +104,30 @@ function showAnalysisResult(data, used) {
   $("status").textContent =
     "Assessment: " + (data.verdict || "Uncertain") +
     " · AI probability: " + (data.synthetic_probability ?? "not provided") + "%" +
-    " · Confidence: " + (data.confidence ?? "not provided") + "%. " +
+    " · Model score: " + (data.confidence ?? "not provided") + "%. " +
+    (data.provider ? "Detector: " + data.provider + ". " : "") +
     (data.explanation || "");
+}
+
+
+async function analyseImageFile(file, used) {
+  if (file.size > 10 * 1024 * 1024) throw new Error("Images must be 10 MB or smaller.");
+  $("status").textContent = "Checking connection to the image analysis service…";
+  const healthResponse = await fetch(API_BASE + "/health", { method: "GET", cache: "no-store" });
+  if (!healthResponse.ok) throw new Error("The analysis server is not responding. Please try again shortly.");
+  const health = await healthResponse.json();
+  if (!health.ok) throw new Error("The analysis service is not ready yet.");
+  if (!health.sightengine_image_configured) {
+    throw new Error("Image detection is not configured yet. The Sightengine API credentials must be added to the server first.");
+  }
+
+  $("status").textContent = "Uploading image securely to Sightengine for AI detection…";
+  const body = new FormData();
+  body.append("image", file);
+  const res = await fetch(API_BASE + "/api/analyse-image", { method: "POST", body });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.detail || "Image analysis could not be completed (HTTP " + res.status + ").");
+  showAnalysisResult(data, used);
 }
 
 async function analyseUploadedFile(file, used) {
@@ -124,6 +155,24 @@ $("analyseBtn").addEventListener("click", async () => {
   const used = Number(localStorage.getItem(key()) || 0);
   if (used >= 3) {
     $("status").textContent = "You have reached the three-check demo limit for today.";
+    return;
+  }
+
+  if (mode === "image") {
+    const file = $("imageFile").files[0];
+    if (!file) {
+      $("status").textContent = "Please choose an image first.";
+      return;
+    }
+    $("analyseBtn").disabled = true;
+    try {
+      await analyseImageFile(file, used);
+    } catch (e) {
+      $("status").textContent = e && e.message ? e.message : String(e);
+    } finally {
+      validate();
+      if (Number(localStorage.getItem(key()) || 0) >= 3) $("analyseBtn").disabled = true;
+    }
     return;
   }
 
