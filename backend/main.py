@@ -1,3 +1,4 @@
+import logging
 import os
 import re
 import subprocess
@@ -16,6 +17,7 @@ MAX_VIDEO_BYTES = 50 * 1024 * 1024
 CLASSIFICATION_THRESHOLD = 0.30
 
 app = FastAPI(title="REAL OR AI API", version="0.1.0")
+logger = logging.getLogger("real_or_ai")
 
 allowed_origin = os.getenv("ALLOWED_ORIGIN", "https://1sam1.github.io")
 app.add_middleware(
@@ -99,13 +101,25 @@ async def analyse(video: UploadFile = File(...)):
         frames_match = re.search(r"Total frames processed:\s*(\d+)", output)
 
         if result.returncode != 0 or not probability_match:
-            # Avoid returning server logs or secrets to the browser.
+            # Log useful diagnostics on the server, but never expose the API key.
+            safe_output = output.replace(api_key, "[REDACTED]")[-5000:]
+            logger.error(
+                "NVIDIA detector failed (exit=%s). Output tail:\\n%s",
+                result.returncode,
+                safe_output,
+            )
             if "UNAUTHENTICATED" in output or "PERMISSION_DENIED" in output:
-                message = "NVIDIA rejected the API credentials or access. Check the NVIDIA API key and detector access."
+                message = "NVIDIA rejected the API credentials or this account does not have access to the detector."
             elif "UNAVAILABLE" in output or "DEADLINE_EXCEEDED" in output:
-                message = "NVIDIA's analysis service is temporarily unavailable. Please try again later."
+                message = "NVIDIA's analysis service is unavailable or timed out. Please try again later."
+            elif "No module named" in output or "ModuleNotFoundError" in output:
+                message = "The NVIDIA client is missing a required Python package. The server log has the exact package error."
+            elif "Configuration error" in output or "unrecognized arguments" in output:
+                message = "The NVIDIA client configuration or command-line options are incorrect. The server log has the exact error."
+            elif not probability_match and result.returncode == 0:
+                message = "The detector ran but did not return a readable probability. The server log has the output for diagnosis."
             else:
-                message = "NVIDIA could not analyse this file. Confirm it is an MP4 with H.264 video and variable frame rate is not used."
+                message = "NVIDIA analysis failed. The server log now contains the detailed error; please share that log with support."
             raise HTTPException(status_code=502, detail=message)
 
         probability = float(probability_match.group(1))
