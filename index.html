@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="theme-color" content="#090d1b"><meta name="description" content="Check a video for signs of AI generation or manipulation.">
+<title>REAL OR AI — Video authenticity checker</title><link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<header class="topbar"><a class="brand" href="#"><span class="brand-mark">R<span>/</span>A</span><span>REAL <b>OR</b> AI</span></a><span class="free-tag">FREE VIDEO CHECKER</span></header>
+<main><section class="hero">
+<div class="eyebrow"><i></i> VIDEO AUTHENTICITY CHECK</div>
+<h1>Is it <span>REAL</span><br>or is it <span class="gradient">AI?</span></h1>
+<p class="intro">Check a video for signs of AI generation or manipulation. Get an evidence-based assessment, not a guess.</p>
+<section class="checker card">
+<div class="tabs"><button class="tab active" id="uploadTab">↑ Upload video</button><button class="tab" id="linkTab">↗ Paste video link</button></div>
+<div id="uploadPanel"><label class="dropzone" for="videoFile"><span class="upload-icon">↑</span><strong>Choose a video to analyse</strong><span>Tap to select a file from your device</span><small>MP4, MOV, WEBM · File limits depend on the analysis service</small></label><input id="videoFile" type="file" accept="video/mp4,video/quicktime,video/webm,video/*" hidden><div id="fileName" class="file-name"></div></div>
+<div id="linkPanel" hidden><label class="field-label" for="videoUrl">Paste a public video URL</label><input id="videoUrl" class="url-input" type="url" placeholder="https://www.youtube.com/watch?v=..." autocomplete="url"><p class="hint">YouTube, Facebook, Instagram, TikTok, X and direct video links. Some platforms restrict third-party access. If a link cannot be accessed lawfully, upload the original video instead.</p></div>
+<button id="analyseBtn" class="primary-btn" disabled>Analyse video <span>→</span></button>
+<div class="usage"><i></i><span id="usageText">3 free checks per day · No account needed</span></div><div id="status" class="status" role="status" aria-live="polite"></div>
+</section>
+<div class="trust-row"><div><b>01</b> Upload or paste a link</div><div><b>02</b> Analyse available signals</div><div><b>03</b> Review the findings</div></div>
+</section>
+<section class="notice card"><span>ⓘ</span><p><b>Important:</b> No detector can prove with certainty that a video is human-made or AI-generated. Results are indicators, not proof. Editing, compression and low-quality footage can affect accuracy.</p></section>
+</main><footer><b>REAL OR AI</b><span>Think before you believe. Verify before you share.</span></footer><script src="app.js"></script>
+</body></html>
