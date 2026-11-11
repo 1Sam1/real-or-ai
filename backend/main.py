@@ -21,12 +21,14 @@ ALLOWED_EXTENSIONS = {".mp4", ".mov", ".m4v", ".mkv", ".webm", ".avi", ".3gp"}
 app = FastAPI(title="REAL OR AI API", version="0.2.0")
 logger = logging.getLogger("real_or_ai")
 
-allowed_origin = os.getenv("ALLOWED_ORIGIN", "https://1sam1.github.io")
+# This public, unauthenticated API accepts browser requests from the public website.
+# Wildcard CORS avoids origin mismatches between GitHub Pages and browser variants.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[allowed_origin],
+    allow_origins=["*"],
     allow_methods=["GET", "POST", "OPTIONS"],
-    allow_headers=["Content-Type"],
+    allow_headers=["*"],
+    expose_headers=["*"],
 )
 
 
