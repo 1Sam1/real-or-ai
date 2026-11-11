@@ -205,7 +205,13 @@ async def analyse(video: UploadFile = File(...)):
         if result.returncode != 0 or not probability_match:
             safe_output = output.replace(api_key, "[REDACTED]")[-4000:]
             logger.error("NVIDIA detector failed (exit=%s). Output tail:\n%s", result.returncode, safe_output)
-            if "UNAUTHENTICATED" in output or "PERMISSION_DENIED" in output:
+            if "RESOURCE_EXHAUSTED" in output or "exceeded rate limit" in output.lower():
+                logger.warning("NVIDIA rate limit reached; request was not automatically retried.")
+                raise HTTPException(
+                    status_code=429,
+                    detail="NVIDIA's free detector is currently rate-limiting requests because its shared capacity is busy. Please wait 5–10 minutes before trying again. Repeated attempts will not make it faster.",
+                )
+            elif "UNAUTHENTICATED" in output or "PERMISSION_DENIED" in output:
                 message = "NVIDIA rejected the API credentials or this account does not have access to the detector."
             elif "UNAVAILABLE" in output or "DEADLINE_EXCEEDED" in output:
                 message = "NVIDIA's analysis service is unavailable or timed out. Please try again later."
