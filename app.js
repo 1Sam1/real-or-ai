@@ -90,7 +90,13 @@ function updateLimit() {
 updateLimit();
 
 function showAnalysisResult(data, used) {
-  showAnalysisResult(data, used);
+  localStorage.setItem(key(), String(used + 1));
+  updateLimit();
+  $("status").textContent =
+    "Assessment: " + (data.verdict || "Uncertain") +
+    " · AI probability: " + (data.synthetic_probability ?? "not provided") + "%" +
+    " · Confidence: " + (data.confidence ?? "not provided") + "%. " +
+    (data.explanation || "");
 }
 
 async function analyseUploadedFile(file, used) {
@@ -111,13 +117,7 @@ async function analyseUploadedFile(file, used) {
     throw new Error(data.detail || data.error || "Analysis could not be completed (HTTP " + res.status + ").");
   }
 
-  localStorage.setItem(key(), String(used + 1));
-  updateLimit();
-  $("status").textContent =
-    "Assessment: " + (data.verdict || "Uncertain") +
-    " · AI probability: " + (data.synthetic_probability ?? "not provided") + "%" +
-    " · Confidence: " + (data.confidence ?? "not provided") + "%. " +
-    (data.explanation || "");
+  showAnalysisResult(data, used);
 }
 
 $("analyseBtn").addEventListener("click", async () => {
