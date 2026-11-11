@@ -6,3 +6,4 @@ grpcio-tools==1.67.1
 matplotlib==3.11.1
 tqdm==4.67.1
 imageio-ffmpeg==0.6.0
+httpx==0.28.1
