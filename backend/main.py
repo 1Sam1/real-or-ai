@@ -1,15 +1,21 @@
 import asyncio
+import ipaddress
 import logging
+import socket
 import os
 import re
 import subprocess
 import sys
 import tempfile
 from pathlib import Path
+from urllib.parse import urljoin, urlparse
 
+import httpx
 import imageio_ffmpeg
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
+from starlette.datastructures import UploadFile as StarletteUploadFile
 
 APP_DIR = Path(__file__).resolve().parent
 NVIDIA_CLIENT = APP_DIR / "nim-clients" / "synthetic-video-detector" / "scripts" / "v1" / "synthetic-video-detector.py"
@@ -93,6 +99,93 @@ def health():
         },
     }
 
+
+
+class VideoURLRequest(BaseModel):
+    url: str
+
+
+def validate_public_video_url(raw_url):
+    """Allow only public HTTPS direct-video URLs; block private/internal targets."""
+    try:
+        parsed = urlparse(raw_url)
+        if parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password:
+            raise ValueError("Only public HTTPS video links are accepted.")
+        if parsed.port not in (None, 443):
+            raise ValueError("Non-standard URL ports are not accepted.")
+        host = parsed.hostname.encode("idna").decode("ascii")
+        if not re.search(r"\\.(mp4|mov|m4v|webm)$", parsed.path, re.IGNORECASE):
+            raise ValueError("Please use a direct MP4, MOV, M4V or WEBM video-file link.")
+        addresses = socket.getaddrinfo(host, 443, type=socket.SOCK_STREAM)
+        if not addresses:
+            raise ValueError("The video host could not be resolved.")
+        for address in addresses:
+            ip = ipaddress.ip_address(address[4][0])
+            if not ip.is_global:
+                raise ValueError("Links to private or internal network addresses are blocked.")
+        return parsed, host
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc) or "Invalid video URL.")
+
+
+async def download_direct_video(raw_url, destination):
+    current_url = raw_url
+    async with httpx.AsyncClient(timeout=httpx.Timeout(20.0, read=45.0), follow_redirects=False) as client:
+        for redirect_count in range(4):
+            parsed, host = validate_public_video_url(current_url)
+            try:
+                async with client.stream("GET", current_url, headers={"User-Agent": "REAL-OR-AI-video-checker/1.0", "Accept": "video/*,application/octet-stream"}) as response:
+                    if response.status_code in (301, 302, 303, 307, 308):
+                        location = response.headers.get("location")
+                        if not location or redirect_count == 3:
+                            raise HTTPException(status_code=400, detail="The video link redirected too many times or had an invalid redirect.")
+                        current_url = urljoin(current_url, location)
+                        continue
+                    if response.status_code != 200:
+                        raise HTTPException(status_code=400, detail=f"The video host returned HTTP {response.status_code}. The file may be private or unavailable.")
+                    content_type = response.headers.get("content-type", "").split(";")[0].lower()
+                    if content_type and not (content_type.startswith("video/") or content_type == "application/octet-stream"):
+                        raise HTTPException(status_code=415, detail="That link did not return a video file. Please use a direct video-file URL.")
+                    length = response.headers.get("content-length")
+                    if length and int(length) > MAX_VIDEO_BYTES:
+                        raise HTTPException(status_code=413, detail="The direct video link exceeds the 25 MB limit.")
+                    total = 0
+                    with open(destination, "wb") as output:
+                        async for chunk in response.aiter_bytes(256 * 1024):
+                            total += len(chunk)
+                            if total > MAX_VIDEO_BYTES:
+                                raise HTTPException(status_code=413, detail="The direct video link exceeds the 25 MB limit.")
+                            output.write(chunk)
+                    if total < 16:
+                        raise HTTPException(status_code=415, detail="The linked video file is empty or too small.")
+                    return Path(parsed.path).suffix.lower() or ".mp4"
+            except httpx.TimeoutException:
+                raise HTTPException(status_code=504, detail="Downloading the video link timed out. Please upload the video instead.")
+            except httpx.RequestError:
+                raise HTTPException(status_code=400, detail="The video link could not be reached. It may require a login or block downloads.")
+    raise HTTPException(status_code=400, detail="The video link could not be followed safely.")
+
+
+@app.post("/api/analyse-url")
+async def analyse_url(request: VideoURLRequest):
+    # Only direct public video-file URLs are fetched. Social-media pages are not scraped.
+    input_path = None
+    wrapped_upload = None
+    try:
+        parsed, _ = validate_public_video_url(request.url)
+        with tempfile.NamedTemporaryFile(prefix="real-or-ai-url-", suffix=parsed.path[-12:], delete=False) as tmp:
+            input_path = Path(tmp.name)
+        extension = await download_direct_video(request.url, input_path)
+        handle = open(input_path, "rb")
+        wrapped_upload = StarletteUploadFile(filename="linked-video" + extension, file=handle)
+        return await analyse(video=wrapped_upload)
+    finally:
+        if wrapped_upload is not None:
+            await wrapped_upload.close()
+        if input_path and input_path.exists():
+            input_path.unlink(missing_ok=True)
 
 @app.post("/api/analyse")
 async def analyse(video: UploadFile = File(...)):
