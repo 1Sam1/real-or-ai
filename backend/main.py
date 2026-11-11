@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import os
 import re
@@ -14,15 +15,17 @@ APP_DIR = Path(__file__).resolve().parent
 NVIDIA_CLIENT = APP_DIR / "nim-clients" / "synthetic-video-detector" / "scripts" / "v1" / "synthetic-video-detector.py"
 NVIDIA_FUNCTION_ID = "847b6e53-0133-452d-ab85-d7acf3ace723"
 NVIDIA_TARGET = "grpc.nvcf.nvidia.com:443"
-MAX_VIDEO_BYTES = 50 * 1024 * 1024
+
+# Conservative limits for Render's 512 MB free instance.
+MAX_VIDEO_BYTES = 25 * 1024 * 1024
+MAX_VIDEO_SECONDS = 60
 CLASSIFICATION_THRESHOLD = 0.30
 ALLOWED_EXTENSIONS = {".mp4", ".mov", ".m4v", ".mkv", ".webm", ".avi", ".3gp"}
+ANALYSIS_LOCK = asyncio.Lock()
 
-app = FastAPI(title="REAL OR AI API", version="0.2.0")
+app = FastAPI(title="REAL OR AI API", version="0.3.0")
 logger = logging.getLogger("real_or_ai")
 
-# This public, unauthenticated API accepts browser requests from the public website.
-# Wildcard CORS avoids origin mismatches between GitHub Pages and browser variants.
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -30,6 +33,43 @@ app.add_middleware(
     allow_headers=["*"],
     expose_headers=["*"],
 )
+
+
+def limited_subprocess_env():
+    """Keep numerical libraries from creating large thread pools."""
+    env = os.environ.copy()
+    env.update({
+        "OMP_NUM_THREADS": "1",
+        "OPENBLAS_NUM_THREADS": "1",
+        "MKL_NUM_THREADS": "1",
+        "NUMEXPR_NUM_THREADS": "1",
+        "MPLBACKEND": "Agg",
+    })
+    return env
+
+
+def get_video_duration(ffmpeg, input_path):
+    # ffmpeg prints the container duration while probing; exit code 1 is
+    # expected because this command intentionally has no output destination.
+    try:
+        probe = subprocess.run(
+            [ffmpeg, "-hide_banner", "-i", str(input_path)],
+            capture_output=True,
+            text=True,
+            timeout=20,
+            check=False,
+            env=limited_subprocess_env(),
+        )
+    except subprocess.TimeoutExpired:
+        raise HTTPException(status_code=422, detail="The video could not be checked quickly. Please try another file.")
+
+    probe_text = (probe.stderr or "") + "\n" + (probe.stdout or "")
+    match = re.search(r"Duration:\\s*(\\d{2}):(\\d{2}):(\\d{2}(?:\\.\\d+)?)", probe_text)
+    if not match:
+        raise HTTPException(status_code=415, detail="The video duration could not be read. Please upload a standard MP4 or MOV video.")
+
+    hours, minutes, seconds = match.groups()
+    return int(hours) * 3600 + int(minutes) * 60 + float(seconds)
 
 
 @app.get("/")
@@ -44,76 +84,96 @@ def health():
         "nvidia_key_configured": bool(os.getenv("NVIDIA_API_KEY")),
         "nvidia_client_installed": NVIDIA_CLIENT.is_file(),
         "video_normalizer_installed": bool(imageio_ffmpeg.get_ffmpeg_exe()),
+        "low_memory_limits": {
+            "max_upload_mb": MAX_VIDEO_BYTES // (1024 * 1024),
+            "max_video_seconds": MAX_VIDEO_SECONDS,
+            "max_parallel_analyses": 1,
+            "output_resolution": "up to 854x480",
+            "output_fps": 15,
+        },
     }
 
 
 @app.post("/api/analyse")
 async def analyse(video: UploadFile = File(...)):
-    api_key = os.getenv("NVIDIA_API_KEY")
-    if not api_key:
-        raise HTTPException(status_code=503, detail="The video analysis service is not configured yet.")
-    if not NVIDIA_CLIENT.is_file():
-        raise HTTPException(status_code=503, detail="The NVIDIA client is not installed on the server.")
+    # A single NVIDIA/FFmpeg job at a time helps avoid overlapping memory peaks.
+    if ANALYSIS_LOCK.locked():
+        raise HTTPException(status_code=429, detail="Another video is being analysed. Please wait a moment and try again.")
 
-    original_name = Path(video.filename or "upload.mp4").name
-    extension = Path(original_name).suffix.lower()
-    if extension not in ALLOWED_EXTENSIONS:
-        raise HTTPException(
-            status_code=415,
-            detail="Please upload a video in MP4, MOV, M4V, MKV, WEBM, AVI or 3GP format.",
-        )
-
+    await ANALYSIS_LOCK.acquire()
     input_path = None
     normalized_path = None
+    api_key = os.getenv("NVIDIA_API_KEY")
+
     try:
+        if not api_key:
+            raise HTTPException(status_code=503, detail="The video analysis service is not configured yet.")
+        if not NVIDIA_CLIENT.is_file():
+            raise HTTPException(status_code=503, detail="The NVIDIA client is not installed on the server.")
+
+        original_name = Path(video.filename or "upload.mp4").name
+        extension = Path(original_name).suffix.lower()
+        if extension not in ALLOWED_EXTENSIONS:
+            raise HTTPException(status_code=415, detail="Please upload MP4, MOV, M4V, MKV, WEBM, AVI or 3GP video.")
+
+        # Stream the upload to disk in small chunks rather than loading it into RAM.
         with tempfile.NamedTemporaryFile(prefix="real-or-ai-input-", suffix=extension, delete=False) as tmp:
             input_path = Path(tmp.name)
             total = 0
             while True:
-                chunk = await video.read(1024 * 1024)
+                chunk = await video.read(256 * 1024)
                 if not chunk:
                     break
                 total += len(chunk)
                 if total > MAX_VIDEO_BYTES:
-                    raise HTTPException(status_code=413, detail="The current upload limit is 50 MB.")
+                    raise HTTPException(status_code=413, detail="The low-memory upload limit is 25 MB. Please use a smaller video.")
                 tmp.write(chunk)
 
         if total < 16:
             raise HTTPException(status_code=415, detail="The uploaded video is empty or too small to analyse.")
 
+        ffmpeg = imageio_ffmpeg.get_ffmpeg_exe()
+        duration = get_video_duration(ffmpeg, input_path)
+        if duration > MAX_VIDEO_SECONDS:
+            raise HTTPException(
+                status_code=413,
+                detail="For reliable processing on the free server, videos must be 60 seconds or shorter.",
+            )
+
         with tempfile.NamedTemporaryFile(prefix="real-or-ai-ready-", suffix=".mp4", delete=False) as tmp:
             normalized_path = Path(tmp.name)
 
-        ffmpeg = imageio_ffmpeg.get_ffmpeg_exe()
+        # Drop audio and normalize to a small, constant-frame-rate H.264 video.
+        # One FFmpeg thread and 480p/15fps output reduce peak memory use.
         conversion = [
-            ffmpeg, "-hide_banner", "-loglevel", "error", "-y",
+            ffmpeg,
+            "-hide_banner", "-loglevel", "error", "-y",
+            "-threads", "1", "-filter_threads", "1", "-filter_complex_threads", "1",
             "-i", str(input_path),
-            "-map", "0:v:0", "-map", "0:a?",
-            "-vf", "fps=30",
-            "-c:v", "libx264", "-preset", "veryfast", "-crf", "23",
-            "-pix_fmt", "yuv420p", "-profile:v", "high", "-level", "4.1",
-            "-r", "30", "-fps_mode", "cfr",
-            "-c:a", "aac", "-b:a", "128k", "-ac", "2", "-ar", "48000",
+            "-map", "0:v:0", "-an",
+            "-vf", "scale='min(854,iw)':'min(480,ih)':force_original_aspect_ratio=decrease:force_divisible_by=2,fps=15",
+            "-c:v", "libx264", "-preset", "ultrafast", "-crf", "28",
+            "-pix_fmt", "yuv420p", "-threads", "1",
+            "-r", "15", "-fps_mode", "cfr",
             "-movflags", "+faststart", "-f", "mp4", str(normalized_path),
         ]
+
         try:
             converted = subprocess.run(
                 conversion,
                 capture_output=True,
                 text=True,
-                timeout=240,
+                timeout=180,
                 check=False,
+                env=limited_subprocess_env(),
             )
         except subprocess.TimeoutExpired:
             raise HTTPException(status_code=422, detail="This video took too long to prepare. Please try a shorter video.")
 
         if converted.returncode != 0 or not normalized_path.exists() or normalized_path.stat().st_size < 1024:
-            safe_error = (converted.stderr or "No video stream could be decoded.")[-2000:]
+            safe_error = (converted.stderr or "No video stream could be decoded.")[-1500:]
             logger.warning("Video conversion failed: %s", safe_error)
-            raise HTTPException(
-                status_code=415,
-                detail="This video could not be decoded or converted. Please try a different video file.",
-            )
+            raise HTTPException(status_code=415, detail="This video could not be converted. Please try a different MP4 or MOV file.")
 
         command = [
             sys.executable,
@@ -133,21 +193,18 @@ async def analyse(video: UploadFile = File(...)):
                 text=True,
                 timeout=900,
                 check=False,
+                env=limited_subprocess_env(),
             )
         except subprocess.TimeoutExpired:
-            raise HTTPException(status_code=504, detail="The video analysis timed out. Please try a shorter video.")
+            raise HTTPException(status_code=504, detail="The video analysis timed out. Please try again with a shorter video.")
 
         output = (result.stdout or "") + "\n" + (result.stderr or "")
-        probability_match = re.search(r"Final probability:\s*([0-9]*[.]?[0-9]+)", output)
-        frames_match = re.search(r"Total frames processed:\s*(\d+)", output)
+        probability_match = re.search(r"Final probability:\\s*([0-9]*[.]?[0-9]+)", output)
+        frames_match = re.search(r"Total frames processed:\\s*(\\d+)", output)
 
         if result.returncode != 0 or not probability_match:
-            safe_output = output.replace(api_key, "[REDACTED]")[-5000:]
-            logger.error(
-                "NVIDIA detector failed (exit=%s). Output tail:\n%s",
-                result.returncode,
-                safe_output,
-            )
+            safe_output = output.replace(api_key, "[REDACTED]")[-4000:]
+            logger.error("NVIDIA detector failed (exit=%s). Output tail:\n%s", result.returncode, safe_output)
             if "UNAUTHENTICATED" in output or "PERMISSION_DENIED" in output:
                 message = "NVIDIA rejected the API credentials or this account does not have access to the detector."
             elif "UNAVAILABLE" in output or "DEADLINE_EXCEEDED" in output:
@@ -158,14 +215,11 @@ async def analyse(video: UploadFile = File(...)):
                 message = "The NVIDIA client is missing a required Python package. The server log has the exact package error."
             elif "Configuration error" in output or "unrecognized arguments" in output:
                 message = "The NVIDIA client configuration or command-line options are incorrect. The server log has the exact error."
-            elif not probability_match and result.returncode == 0:
-                message = "The detector ran but did not return a readable probability. The server log has the output for diagnosis."
             else:
                 message = "NVIDIA analysis failed. The server log contains the detailed error."
             raise HTTPException(status_code=502, detail=message)
 
-        probability = float(probability_match.group(1))
-        probability = max(0.0, min(1.0, probability))
+        probability = max(0.0, min(1.0, float(probability_match.group(1))))
         synthetic = probability > CLASSIFICATION_THRESHOLD
         verdict = "LIKELY AI-GENERATED" if synthetic else "LIKELY HUMAN-MADE"
         confidence = probability * 100 if synthetic else (1.0 - probability) * 100
@@ -183,3 +237,4 @@ async def analyse(video: UploadFile = File(...)):
             if path and path.exists():
                 path.unlink(missing_ok=True)
         await video.close()
+        ANALYSIS_LOCK.release()
