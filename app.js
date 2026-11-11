@@ -47,32 +47,37 @@ $("analyseBtn").addEventListener("click", async () => {
   }
 
   if (mode !== "upload") {
-    $("status").textContent = "Direct social-media link analysis is not available yet. Please download the video where permitted and upload the MP4 file instead.";
+    $("status").textContent = "Direct social-media link analysis is not available yet. Please upload the original video instead.";
     return;
   }
 
   const file = $("videoFile").files[0];
   if (!file) {
-    $("status").textContent = "Please choose an MP4 video first.";
-    return;
-  }
-
-  if (!file.name.toLowerCase().endsWith(".mp4")) {
-    $("status").textContent = "Please upload an MP4 video encoded with H.264.";
+    $("status").textContent = "Please choose a video first.";
     return;
   }
 
   $("analyseBtn").disabled = true;
-  $("status").textContent = "Sending video securely for analysis. This may take a few minutes…";
+  $("status").textContent = "Checking connection to the analysis server…";
 
   try {
+    // First verify browser-to-Render connectivity and CORS independently of the upload.
+    const healthResponse = await fetch(API_BASE + "/health", { method: "GET", cache: "no-store" });
+    if (!healthResponse.ok) {
+      throw new Error("The analysis server responded with HTTP " + healthResponse.status + ". Please try again shortly.");
+    }
+    const health = await healthResponse.json();
+    if (!health.ok) throw new Error("The analysis service is not ready yet. Please try again shortly.");
+
+    $("status").textContent = "Connection successful. Sending video securely for analysis…";
+
     const body = new FormData();
     body.append("video", file);
     const res = await fetch(API_BASE + "/api/analyse", { method: "POST", body });
     const data = await res.json().catch(() => ({}));
 
     if (!res.ok) {
-      throw new Error(data.detail || data.error || "Analysis could not be completed. Please try again.");
+      throw new Error(data.detail || data.error || "Analysis could not be completed (HTTP " + res.status + ").");
     }
 
     localStorage.setItem(key(), String(used + 1));
@@ -84,7 +89,12 @@ $("analyseBtn").addEventListener("click", async () => {
       " · Confidence: " + (data.confidence ?? "not provided") + "%. " +
       (data.explanation || "");
   } catch (e) {
-    $("status").textContent = e.message || "Something went wrong. Please try again.";
+    const message = e && e.message ? e.message : String(e);
+    if (message === "Failed to fetch" || e instanceof TypeError) {
+      $("status").textContent = "Browser could not connect to the analysis server. The connection check or upload was blocked. Please send us the exact status message and the Render logs from the same test.";
+    } else {
+      $("status").textContent = message;
+    }
   } finally {
     validate();
     if (Number(localStorage.getItem(key()) || 0) >= 3) $("analyseBtn").disabled = true;
