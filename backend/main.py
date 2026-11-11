@@ -25,6 +25,8 @@ NVIDIA_TARGET = "grpc.nvcf.nvidia.com:443"
 # Conservative limits for Render's 512 MB free instance.
 MAX_VIDEO_BYTES = 25 * 1024 * 1024
 MAX_VIDEO_SECONDS = 60
+MAX_IMAGE_BYTES = 10 * 1024 * 1024
+ALLOWED_IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
 CLASSIFICATION_THRESHOLD = 0.30
 ALLOWED_EXTENSIONS = {".mp4", ".mov", ".m4v", ".mkv", ".webm", ".avi", ".3gp"}
 ANALYSIS_LOCK = asyncio.Lock()
@@ -88,6 +90,7 @@ def health():
     return {
         "ok": True,
         "nvidia_key_configured": bool(os.getenv("NVIDIA_API_KEY")),
+        "sightengine_image_configured": bool(os.getenv("SIGHTENGINE_API_USER") and os.getenv("SIGHTENGINE_API_SECRET")),
         "nvidia_client_installed": NVIDIA_CLIENT.is_file(),
         "video_normalizer_installed": bool(imageio_ffmpeg.get_ffmpeg_exe()),
         "low_memory_limits": {
@@ -186,6 +189,82 @@ async def analyse_url(request: VideoURLRequest):
             await wrapped_upload.close()
         if input_path and input_path.exists():
             input_path.unlink(missing_ok=True)
+
+
+@app.post("/api/analyse-image")
+async def analyse_image(image: UploadFile = File(...)):
+    """Assess an uploaded image using Sightengine's AI-generated image model."""
+    api_user = os.getenv("SIGHTENGINE_API_USER")
+    api_secret = os.getenv("SIGHTENGINE_API_SECRET")
+    if not api_user or not api_secret:
+        raise HTTPException(
+            status_code=503,
+            detail="Image detection is not configured yet. Add the Sightengine API User ID and API Secret to the server environment.",
+        )
+
+    filename = Path(image.filename or "upload.jpg").name
+    extension = Path(filename).suffix.lower()
+    if extension not in ALLOWED_IMAGE_EXTENSIONS:
+        raise HTTPException(status_code=415, detail="Please upload a JPG, JPEG, PNG or WEBP image.")
+
+    try:
+        content = await image.read(MAX_IMAGE_BYTES + 1)
+        if len(content) > MAX_IMAGE_BYTES:
+            raise HTTPException(status_code=413, detail="Images must be 10 MB or smaller.")
+        if len(content) < 16:
+            raise HTTPException(status_code=415, detail="The image is empty or too small to analyse.")
+
+        content_type = image.content_type or "application/octet-stream"
+        files = {"media": (filename, content, content_type)}
+        data = {"models": "genai", "api_user": api_user, "api_secret": api_secret}
+        try:
+            async with httpx.AsyncClient(timeout=httpx.Timeout(45.0)) as client:
+                response = await client.post(
+                    "https://api.sightengine.com/1.0/check.json",
+                    data=data,
+                    files=files,
+                )
+        except httpx.TimeoutException:
+            raise HTTPException(status_code=504, detail="Sightengine image analysis timed out. Please try again.")
+        except httpx.RequestError:
+            raise HTTPException(status_code=502, detail="Could not connect to Sightengine. Please try again later.")
+
+        try:
+            result = response.json()
+        except ValueError:
+            result = {}
+
+        if response.status_code != 200 or result.get("status") != "success":
+            logger.warning("Sightengine image API error (HTTP %s): %s", response.status_code, str(result)[:1200])
+            error_message = result.get("error", {}).get("message") if isinstance(result.get("error"), dict) else None
+            raise HTTPException(
+                status_code=502,
+                detail=error_message or "Sightengine could not analyse this image. Check that AI image detection is enabled for your account.",
+            )
+
+        score = (result.get("type") or {}).get("ai_generated")
+        if not isinstance(score, (int, float)):
+            raise HTTPException(status_code=502, detail="Sightengine returned no AI-generated image score.")
+
+        probability = max(0.0, min(1.0, float(score)))
+        if probability >= 0.65:
+            verdict = "LIKELY AI-GENERATED"
+        elif probability <= 0.35:
+            verdict = "LIKELY HUMAN-MADE"
+        else:
+            verdict = "UNCERTAIN"
+
+        return {
+            "media_type": "image",
+            "provider": "Sightengine",
+            "verdict": verdict,
+            "synthetic_probability": round(probability * 100, 2),
+            "confidence": round((probability if probability >= 0.5 else 1.0 - probability) * 100, 2),
+            "explanation": "Sightengine's AI image model score is an indicator, not proof. Edited, cropped, compressed or unusual images can affect the result.",
+            "request_id": (result.get("request") or {}).get("id"),
+        }
+    finally:
+        await image.close()
 
 @app.post("/api/analyse")
 async def analyse(video: UploadFile = File(...)):
