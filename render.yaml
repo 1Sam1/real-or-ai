@@ -1,0 +1,14 @@
+services:
+  - type: web
+    name: real-or-ai-api
+    runtime: python
+    plan: free
+    rootDir: backend
+    buildCommand: pip install -r requirements.txt && git clone --depth 1 https://github.com/NVIDIA-Maxine/nim-clients.git /opt/nim-clients
+    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+    envVars:
+      - key: NVIDIA_API_KEY
+        sync: false
+      - key: ALLOWED_ORIGIN
+        value: https://1sam1.github.io
