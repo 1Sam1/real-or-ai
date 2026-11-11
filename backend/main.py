@@ -95,7 +95,7 @@ async def analyse(video: UploadFile = File(...)):
             raise HTTPException(status_code=504, detail="The video analysis timed out. Please try a shorter video.")
 
         output = (result.stdout or "") + "\n" + (result.stderr or "")
-        probability_match = re.search(r"Final probability:\s*([0-9]*\\.?[0-9]+)", output)
+                probability_match = re.search(r"Final probability:\\s*([0-9]*[.]?[0-9]+)", output)
         frames_match = re.search(r"Total frames processed:\s*(\d+)", output)
 
         if result.returncode != 0 or not probability_match:
