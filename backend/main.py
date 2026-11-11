@@ -114,7 +114,7 @@ def validate_public_video_url(raw_url):
         if parsed.port not in (None, 443):
             raise ValueError("Non-standard URL ports are not accepted.")
         host = parsed.hostname.encode("idna").decode("ascii")
-        if not re.search(r"\\.(mp4|mov|m4v|webm)$", parsed.path, re.IGNORECASE):
+        if not re.search(r"\.(mp4|mov|m4v|webm)$", parsed.path, re.IGNORECASE):
             raise ValueError("Please use a direct MP4, MOV, M4V or WEBM video-file link.")
         addresses = socket.getaddrinfo(host, 443, type=socket.SOCK_STREAM)
         if not addresses:
@@ -175,7 +175,7 @@ async def analyse_url(request: VideoURLRequest):
     wrapped_upload = None
     try:
         parsed, _ = validate_public_video_url(request.url)
-        with tempfile.NamedTemporaryFile(prefix="real-or-ai-url-", suffix=parsed.path[-12:], delete=False) as tmp:
+        with tempfile.NamedTemporaryFile(prefix="real-or-ai-url-", suffix=".download", delete=False) as tmp:
             input_path = Path(tmp.name)
         extension = await download_direct_video(request.url, input_path)
         handle = open(input_path, "rb")
