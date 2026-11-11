@@ -136,13 +136,13 @@ async def analyse(video: UploadFile = File(...)):
             raise HTTPException(status_code=504, detail="The video analysis timed out. Please try a shorter video.")
 
         output = (result.stdout or "") + "\n" + (result.stderr or "")
-        probability_match = re.search(r"Final probability:\\s*([0-9]*[.]?[0-9]+)", output)
-        frames_match = re.search(r"Total frames processed:\\s*(\\d+)", output)
+        probability_match = re.search(r"Final probability:\s*([0-9]*[.]?[0-9]+)", output)
+        frames_match = re.search(r"Total frames processed:\s*(\d+)", output)
 
         if result.returncode != 0 or not probability_match:
             safe_output = output.replace(api_key, "[REDACTED]")[-5000:]
             logger.error(
-                "NVIDIA detector failed (exit=%s). Output tail:\\n%s",
+                "NVIDIA detector failed (exit=%s). Output tail:\n%s",
                 result.returncode,
                 safe_output,
             )
