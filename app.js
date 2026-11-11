@@ -89,6 +89,10 @@ function updateLimit() {
 
 updateLimit();
 
+function showAnalysisResult(data, used) {
+  showAnalysisResult(data, used);
+}
+
 async function analyseUploadedFile(file, used) {
   $("status").textContent = "Checking connection to the analysis server…";
   const healthResponse = await fetch(API_BASE + "/health", { method: "GET", cache: "no-store" });
@@ -136,8 +140,31 @@ $("analyseBtn").addEventListener("click", async () => {
       return;
     }
 
-    $("status").textContent =
-      "Direct video link recognised. The current analysis server accepts video uploads; direct-link downloading is being added separately. Please upload this video file for a real analysis.";
+    $("analyseBtn").disabled = true;
+    $("status").textContent = "Checking the direct video link and downloading the video securely…";
+    try {
+      const healthResponse = await fetch(API_BASE + "/health", { method: "GET", cache: "no-store" });
+      if (!healthResponse.ok) throw new Error("The analysis server is not responding. Please try again shortly.");
+      const health = await healthResponse.json();
+      if (!health.ok) throw new Error("The analysis service is not ready yet. Please try again shortly.");
+
+      const res = await fetch(API_BASE + "/api/analyse-url", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ url: link.url })
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.detail || "The linked video could not be analysed (HTTP " + res.status + ").");
+      showAnalysisResult(data, used);
+    } catch (e) {
+      const message = e && e.message ? e.message : String(e);
+      $("status").textContent = message === "Failed to fetch" || e instanceof TypeError
+        ? "Could not connect to the analysis server. Please try again shortly."
+        : message;
+    } finally {
+      validate();
+      if (Number(localStorage.getItem(key()) || 0) >= 3) $("analyseBtn").disabled = true;
+    }
     return;
   }
 
