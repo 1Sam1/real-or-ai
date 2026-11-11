@@ -64,7 +64,7 @@ def get_video_duration(ffmpeg, input_path):
         raise HTTPException(status_code=422, detail="The video could not be checked quickly. Please try another file.")
 
     probe_text = (probe.stderr or "") + "\n" + (probe.stdout or "")
-    match = re.search(r"Duration:\\s*(\\d{2}):(\\d{2}):(\\d{2}(?:\\.\\d+)?)", probe_text)
+    match = re.search(r"Duration:\s*(\d{2}):(\d{2}):(\d{2}(?:\.\d+)?)", probe_text)
     if not match:
         raise HTTPException(status_code=415, detail="The video duration could not be read. Please upload a standard MP4 or MOV video.")
 
@@ -199,8 +199,8 @@ async def analyse(video: UploadFile = File(...)):
             raise HTTPException(status_code=504, detail="The video analysis timed out. Please try again with a shorter video.")
 
         output = (result.stdout or "") + "\n" + (result.stderr or "")
-        probability_match = re.search(r"Final probability:\\s*([0-9]*[.]?[0-9]+)", output)
-        frames_match = re.search(r"Total frames processed:\\s*(\\d+)", output)
+        probability_match = re.search(r"Final probability:\s*([0-9]*[.]?[0-9]+)", output)
+        frames_match = re.search(r"Total frames processed:\s*(\d+)", output)
 
         if result.returncode != 0 or not probability_match:
             safe_output = output.replace(api_key, "[REDACTED]")[-4000:]
